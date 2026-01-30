@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
+import * as Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  PanResponder,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -33,16 +34,20 @@ type AnalysisResult = {
 
 type AuthMode = 'login' | 'register';
 
-type StoredUser = { email: string; password: string };
+type AuthResponse = { token: string };
 
-const SUMMARY_MODEL = 'facebook/bart-large-cnn';
-const OCR_MODEL = 'microsoft/trocr-base-printed';
-const HF_TOKEN = process.env.EXPO_PUBLIC_HF_TOKEN ?? '';
-const PDF_API_BASE = process.env.EXPO_PUBLIC_PDF_API_BASE ?? 'http://127.0.0.1:8787';
+type StoredSession = {
+  email: string;
+  token: string;
+};
+
+const API_BASE =
+  (Constants.default.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
+  process.env.EXPO_PUBLIC_API_BASE ??
+  'http://127.0.0.1:8787';
 const MAX_CHUNK_CHARS = 1800;
 
-const USERS_KEY = 'doc_analyzer_users_v1';
-const SESSION_KEY = 'doc_analyzer_session_v1';
+const SESSION_KEY = 'doc_analyzer_session_v2';
 
 export default function DocumentAnalyzerScreen() {
   const [inputText, setInputText] = useState('');
@@ -54,8 +59,11 @@ export default function DocumentAnalyzerScreen() {
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [session, setSession] = useState<StoredSession | null>(null);
   const [isBooting, setIsBooting] = useState(true);
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [inputHeight, setInputHeight] = useState(160);
+  const [outputHeight, setOutputHeight] = useState(160);
 
   const canAnalyze = inputText.trim().length > 0 && !isLoading;
   const outputText = useMemo(() => (result ? formatResult(result) : ''), [result]);
@@ -64,11 +72,59 @@ export default function DocumentAnalyzerScreen() {
     void bootstrapSession();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const checkServer = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/health`);
+        if (!cancelled) {
+          setApiOnline(response.ok);
+        }
+      } catch {
+        if (!cancelled) {
+          setApiOnline(false);
+        }
+      }
+    };
+
+    checkServer();
+    const interval = setInterval(checkServer, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const inputPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderMove: (_evt, gestureState) => {
+          setInputHeight((prev) => clamp(prev + gestureState.dy, 100, 520));
+        },
+      }),
+    [],
+  );
+
+  const outputPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderMove: (_evt, gestureState) => {
+          setOutputHeight((prev) => clamp(prev + gestureState.dy, 100, 520));
+        },
+      }),
+    [],
+  );
+
   const bootstrapSession = async () => {
     try {
-      const savedSession = await SecureStore.getItemAsync(SESSION_KEY);
-      if (savedSession) {
-        setSessionEmail(savedSession);
+      const saved = await SecureStore.getItemAsync(SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as StoredSession;
+        if (parsed?.token) {
+          setSession(parsed);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -94,14 +150,21 @@ export default function DocumentAnalyzerScreen() {
     }
 
     try {
-      const users = await loadUsers();
-      const match = users.find((user) => user.email === email && user.password === password);
-      if (!match) {
-        Alert.alert('Accesso negato', 'Credenziali non valide.');
-        return;
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!response.ok) {
+        const detail = await readError(response);
+        throw new Error(detail);
       }
-      await SecureStore.setItemAsync(SESSION_KEY, email);
-      setSessionEmail(email);
+
+      const data = (await response.json()) as AuthResponse;
+      const nextSession = { email, token: data.token };
+      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(nextSession));
+      setSession(nextSession);
       setAuthPassword('');
       setLastError(null);
       setStatus('Accesso effettuato.');
@@ -119,15 +182,21 @@ export default function DocumentAnalyzerScreen() {
     }
 
     try {
-      const users = await loadUsers();
-      if (users.some((user) => user.email === email)) {
-        Alert.alert('Gia\' registrato', 'Questa email esiste gia\'.');
-        return;
+      const response = await fetch(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!response.ok) {
+        const detail = await readError(response);
+        throw new Error(detail);
       }
-      const nextUsers = [...users, { email, password }];
-      await AsyncStorage.setItem(USERS_KEY, JSON.stringify(nextUsers));
-      await SecureStore.setItemAsync(SESSION_KEY, email);
-      setSessionEmail(email);
+
+      const data = (await response.json()) as AuthResponse;
+      const nextSession = { email, token: data.token };
+      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(nextSession));
+      setSession(nextSession);
       setAuthPassword('');
       setLastError(null);
       setStatus('Registrazione completata.');
@@ -138,7 +207,7 @@ export default function DocumentAnalyzerScreen() {
 
   const handleLogout = async () => {
     await SecureStore.deleteItemAsync(SESSION_KEY);
-    setSessionEmail(null);
+    setSession(null);
     setResult(null);
     setInputText('');
     setStatus('Sessione chiusa.');
@@ -150,8 +219,8 @@ export default function DocumentAnalyzerScreen() {
       Alert.alert('Testo mancante', 'Incolla un testo o carica un file.');
       return;
     }
-    if (!HF_TOKEN) {
-      Alert.alert('Token mancante', 'Imposta EXPO_PUBLIC_HF_TOKEN prima di avviare l\'app.');
+    if (!session?.token) {
+      Alert.alert('Sessione mancante', 'Effettua il login.');
       return;
     }
 
@@ -160,7 +229,7 @@ export default function DocumentAnalyzerScreen() {
     setLastError(null);
 
     try {
-      const aiSummary = await summarizeLong(trimmed);
+      const aiSummary = await summarizeLong(trimmed, session.token);
       const analysis = buildAnalysis(trimmed, aiSummary);
       setResult(analysis);
       setStatus('Analisi completata.');
@@ -187,15 +256,13 @@ export default function DocumentAnalyzerScreen() {
       setIsLoading(true);
       setLastError(null);
 
+      if (!session?.token) {
+        throw new Error('Effettua il login prima di caricare un file.');
+      }
+
       if (asset.mimeType?.startsWith('image/')) {
-        if (!HF_TOKEN) {
-          throw new Error('Token HuggingFace mancante.');
-        }
-        setStatus('OCR immagine via HuggingFace...');
-        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        const text = await ocrImage(base64);
+        setStatus('OCR immagine via server...');
+        const text = await ocrImage(asset, session.token);
         if (!text.trim()) {
           throw new Error('OCR non ha prodotto testo.');
         }
@@ -216,7 +283,7 @@ export default function DocumentAnalyzerScreen() {
 
       if (asset.mimeType === 'application/pdf' || asset.name?.endsWith('.pdf')) {
         setStatus('Estraggo testo dal PDF...');
-        const text = await extractPdfText(asset);
+        const text = await extractPdfText(asset, session.token);
         setInputText(text);
         setResult(null);
         setStatus('Testo PDF caricato.');
@@ -284,7 +351,7 @@ export default function DocumentAnalyzerScreen() {
     );
   }
 
-  if (!sessionEmail) {
+  if (!session) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.container}>
@@ -345,11 +412,37 @@ export default function DocumentAnalyzerScreen() {
           <View style={styles.headerRow}>
             <View style={styles.headerTextBlock}>
               <Text style={styles.headerTitle}>Sintesi Documenti</Text>
-              <Text style={styles.headerSubtitle}>{`Utente: ${sessionEmail}`}</Text>
+              <Text style={styles.headerSubtitle}>{`Utente: ${session.email}`}</Text>
             </View>
             <MiniButton label="Logout" onPress={handleLogout} />
           </View>
-         
+          <Text style={styles.headerHint}>React Native + Backend Render. Incolla testo o carica un file.</Text>
+        </View>
+
+        <View style={styles.serverCard}>
+          <View style={styles.serverRow}>
+            <View
+              style={[
+                styles.serverDot,
+                apiOnline == null
+                  ? styles.serverDotIdle
+                  : apiOnline
+                    ? styles.serverDotOk
+                    : styles.serverDotError,
+              ]}
+            />
+            <View style={styles.serverTextBlock}>
+              <Text style={styles.serverTitle}>API</Text>
+              <Text style={styles.serverSubtitle}>{API_BASE}</Text>
+            </View>
+          </View>
+          <Text style={styles.serverHint}>
+            {apiOnline == null
+              ? 'Verifica in corso...'
+              : apiOnline
+                ? 'Server raggiungibile.'
+                : 'Server non raggiungibile. Verifica URL e deploy.'}
+          </Text>
         </View>
 
         <View style={styles.statusRow}>
@@ -373,8 +466,11 @@ export default function DocumentAnalyzerScreen() {
             onChangeText={setInputText}
             placeholder="Incolla qui il testo estratto..."
             placeholderTextColor="#6b6b6b"
-            style={styles.textInput}
+            style={[styles.textInput, { height: inputHeight }]}
           />
+          <View style={styles.resizeHandle} {...inputPanResponder.panHandlers}>
+            <View style={styles.resizeBar} />
+          </View>
 
           <View style={styles.buttonRow}>
             <ActionButton label="Carica file" onPress={handlePickFile} disabled={isLoading} />
@@ -395,16 +491,12 @@ export default function DocumentAnalyzerScreen() {
               <MiniButton label="Esporta PDF" onPress={handleExportPdf} disabled={!outputText || isLoading} />
             </View>
           </View>
-          <Text selectable style={styles.outputText}>
+          <Text selectable style={[styles.outputText, { height: outputHeight }]}> 
             {outputText || 'Nessuna sintesi disponibile.'}
           </Text>
-        </View>
-
-        <View style={styles.footerCard}>
-          <Text style={styles.footerTitle}>PDF reali</Text>
-          <Text style={styles.footerText}>
-            {`Per estrarre testo dai PDF serve il server locale. Avvialo con: cd server && npm run start. Poi imposta EXPO_PUBLIC_PDF_API_BASE su http://IP_DEL_MAC:8787. Ora: ${PDF_API_BASE}`}
-          </Text>
+          <View style={styles.resizeHandleDark} {...outputPanResponder.panHandlers}>
+            <View style={styles.resizeBar} />
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -455,20 +547,7 @@ function MiniButton({
   );
 }
 
-async function loadUsers(): Promise<StoredUser[]> {
-  const raw = await AsyncStorage.getItem(USERS_KEY);
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(raw) as StoredUser[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-async function extractPdfText(asset: DocumentPicker.DocumentPickerAsset): Promise<string> {
+async function extractPdfText(asset: DocumentPicker.DocumentPickerAsset, token: string): Promise<string> {
   const form = new FormData();
   form.append('file', {
     uri: asset.uri,
@@ -476,16 +555,17 @@ async function extractPdfText(asset: DocumentPicker.DocumentPickerAsset): Promis
     type: 'application/pdf',
   } as unknown as Blob);
 
-  let response: Response;
+  let response;
   try {
-    response = await fetch(`${PDF_API_BASE}/extract-pdf`, {
+    response = await fetch(`${API_BASE}/extract-pdf`, {
       method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
       body: form,
     });
   } catch {
-    throw new Error(
-      `Server PDF non raggiungibile. Usa EXPO_PUBLIC_PDF_API_BASE=http://IP_DEL_MAC:8787 (ora: ${PDF_API_BASE}).`,
-    );
+    throw new Error(`Server non raggiungibile. Verifica ${API_BASE}`);
   }
 
   if (!response.ok) {
@@ -501,19 +581,19 @@ async function extractPdfText(asset: DocumentPicker.DocumentPickerAsset): Promis
   return text;
 }
 
-async function summarizeLong(text: string): Promise<string | null> {
+async function summarizeLong(text: string, token: string): Promise<string | null> {
   const trimmed = text.trim();
   if (!trimmed) {
     return null;
   }
   if (trimmed.length <= MAX_CHUNK_CHARS) {
-    return summarizeChunk(trimmed);
+    return summarizeChunk(trimmed, token);
   }
 
   const chunks = splitIntoChunks(trimmed, MAX_CHUNK_CHARS);
   const partials: string[] = [];
   for (const chunk of chunks) {
-    const summary = await summarizeChunk(chunk);
+    const summary = await summarizeChunk(chunk, token);
     if (summary?.trim()) {
       partials.push(summary.trim());
     }
@@ -524,45 +604,19 @@ async function summarizeLong(text: string): Promise<string | null> {
 
   const combined = partials.join(' ');
   if (combined.length <= MAX_CHUNK_CHARS) {
-    return (await summarizeChunk(combined)) ?? combined;
+    return (await summarizeChunk(combined, token)) ?? combined;
   }
   return combined;
 }
 
-async function summarizeChunk(text: string): Promise<string | null> {
-  const response = await fetch(
-    `https://router.huggingface.co/hf-inference/models/${SUMMARY_MODEL}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${HF_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        inputs: text,
-        parameters: { min_length: 40, max_length: 220 },
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    const detail = await readError(response);
-    throw new Error(detail);
-  }
-
-  const decoded = (await response.json()) as { summary_text?: string }[];
-  return decoded?.[0]?.summary_text ?? null;
-}
-
-async function ocrImage(base64: string): Promise<string> {
-  const bytes = Buffer.from(base64, 'base64');
-  const response = await fetch(`https://router.huggingface.co/hf-inference/models/${OCR_MODEL}`, {
+async function summarizeChunk(text: string, token: string): Promise<string | null> {
+  const response = await fetch(`${API_BASE}/analyze`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${HF_TOKEN}`,
-      'Content-Type': 'application/octet-stream',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
     },
-    body: bytes as unknown as BodyInit,
+    body: JSON.stringify({ text }),
   });
 
   if (!response.ok) {
@@ -570,22 +624,41 @@ async function ocrImage(base64: string): Promise<string> {
     throw new Error(detail);
   }
 
-  const decoded = (await response.json()) as
-    | { generated_text?: string }
-    | { generated_text?: string }[];
+  const decoded = (await response.json()) as { summary?: string };
+  return decoded.summary ?? null;
+}
 
-  if (Array.isArray(decoded)) {
-    return decoded[0]?.generated_text ?? '';
+async function ocrImage(asset: DocumentPicker.DocumentPickerAsset, token: string): Promise<string> {
+  const form = new FormData();
+  form.append('file', {
+    uri: asset.uri,
+    name: asset.name ?? 'image.jpg',
+    type: asset.mimeType ?? 'image/jpeg',
+  } as unknown as Blob);
+
+  const response = await fetch(`${API_BASE}/ocr`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const detail = await readError(response);
+    throw new Error(detail);
   }
-  return decoded.generated_text ?? '';
+
+  const decoded = (await response.json()) as { text?: string };
+  return decoded.text ?? '';
 }
 
 async function readError(response: Response): Promise<string> {
   if (response.status === 401) {
-    return 'Autenticazione HuggingFace fallita (401). Controlla EXPO_PUBLIC_HF_TOKEN e riavvia Expo.';
+    return 'Autenticazione fallita. Verifica email/password.';
   }
   if (response.status === 404) {
-    return 'Endpoint non trovato (404). Verifica URL del server o del modello.';
+    return 'Endpoint non trovato (404).';
   }
   try {
     const decoded = await response.json();
@@ -840,6 +913,10 @@ function wrapLines(text: string, maxChars: number): string[] {
   return lines.length ? lines : [''];
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -938,7 +1015,6 @@ const styles = StyleSheet.create({
     color: '#12201f',
   },
   textInput: {
-    minHeight: 180,
     backgroundColor: '#f4eee6',
     borderRadius: 14,
     padding: 14,
@@ -1018,20 +1094,63 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  footerCard: {
-    backgroundColor: '#fdf7ed',
+  serverCard: {
+    backgroundColor: '#f1f6f4',
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#e5d8c7',
-    padding: 16,
+    borderColor: '#d7e6df',
+    padding: 14,
     gap: 6,
   },
-  footerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1d1d1b',
+  serverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  footerText: {
-    color: '#3a3a38',
+  serverDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 12,
+  },
+  serverDotIdle: {
+    backgroundColor: '#9aa7a5',
+  },
+  serverDotOk: {
+    backgroundColor: '#22c55e',
+  },
+  serverDotError: {
+    backgroundColor: '#ef4444',
+  },
+  serverTextBlock: {
+    flex: 1,
+  },
+  serverTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#102221',
+  },
+  serverSubtitle: {
+    fontSize: 12,
+    color: '#334845',
+  },
+  serverHint: {
+    fontSize: 12,
+    color: '#334845',
+  },
+  resizeHandle: {
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resizeHandleDark: {
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resizeBar: {
+    width: 46,
+    height: 4,
+    borderRadius: 4,
+    backgroundColor: '#b9aca0',
   },
 });

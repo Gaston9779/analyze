@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: document-analyzer-api
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true

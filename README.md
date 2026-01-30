@@ -37,7 +37,7 @@ Output in `dist/`.
 Puoi pubblicare `dist/` su Vercel, Netlify, Cloudflare Pages o hosting statico equivalente.
 
 ## Deploy API (Render)
-Usa `render.yaml` (root) per deploy completo API + Web, oppure `server/render.yaml` per sola API.
+Usa `document_analyzer_rn/render.yaml` per deploy completo API + Web, oppure `document_analyzer_rn/server/render.yaml` per sola API.
 
 Servizi previsti:
 - API: `analysispdf-api`

@@ -6,7 +6,6 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -914,6 +913,8 @@ function hardChunks(text: string, maxChars: number): string[] {
 }
 
 async function buildPdf(content: string): Promise<Uint8Array> {
+  // Lazy-load pdf-lib to avoid web startup crashes caused by its transpiled helpers in some bundling environments.
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 

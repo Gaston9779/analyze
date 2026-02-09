@@ -18,13 +18,9 @@ services:
       - key: CORS_ORIGIN
         sync: false
       - key: USERS_FILE
-        value: /var/data/users.json
+        value: /tmp/users.json
       - key: MAX_UPLOAD_BYTES
         value: 5242880
-    disk:
-      name: analysispdf-data
-      mountPath: /var/data
-      sizeGB: 1
 
   - type: web
     name: analysispdf

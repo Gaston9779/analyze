@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: analysispdf-api
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HF_TOKEN
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: USERS_FILE
+        value: /var/data/users.json
+      - key: MAX_UPLOAD_BYTES
+        value: 5242880
+    disk:
+      name: document-analyzer-data
+      mountPath: /var/data
+      sizeGB: 1

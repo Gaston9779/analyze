@@ -25,6 +25,7 @@ Configura l'API base URL in un file `.env` nella root del progetto:
 ```bash
 EXPO_PUBLIC_API_BASE=https://your-api-domain.com
 ```
+Puoi partire da `.env.example`.
 
 ## Build Web statica
 ```bash
@@ -44,8 +45,11 @@ Servizi previsti:
 - Web: `analysispdf`
 
 Per il deploy imposta:
+- `NODE_ENV=production`
 - `HF_TOKEN`
 - `JWT_SECRET`
 - `CORS_ORIGIN` (es. `https://analysispdf.onrender.com`)
+- `USERS_FILE=/tmp/users.json` (Render free tier, non persistente)
+- `MAX_UPLOAD_BYTES=5242880`
 
-Il file utenti viene salvato su disk persistente Render in `/var/data/users.json`.
+Per l'API puoi partire da `server/.env.example`.

@@ -1,17 +1,22 @@
 {
   "expo": {
-    "name": "document_analyzer_rn",
-    "slug": "document_analyzer_rn",
-    "version": "1.0.0",
+    "name": "Document Analyzer",
+    "slug": "document-analyzer",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "documentanalyzerrn",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gaston9779.documentanalyzer",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.gaston9779.documentanalyzer",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -44,6 +49,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "apiBase": "https://analysispdf-api.onrender.com",
+      "router": {},
+      "eas": {
+        "projectId": "c5f59299-3e24-463a-b067-d79ee38d6fa8"
+      }
     }
   }
 }

@@ -1,50 +1,51 @@
-# Welcome to your Expo app 👋
+# Document Analyzer (Expo + Web + Backend API)
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+App React Native/Expo con supporto Android, iOS e Web.
 
-## Get started
+## Requisiti
+- Node 20+
+- npm
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
+## Frontend locale
 ```bash
-npm run reset-project
+cd document_analyzer_rn
+npm install
+npx expo start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Backend locale
+```bash
+cd document_analyzer_rn/server
+npm install
+HF_TOKEN=YOUR_HF_TOKEN JWT_SECRET=YOUR_SECRET CORS_ORIGIN=http://localhost:8081 npm run start
+```
 
-## Learn more
+## Variabili frontend
+Configura l'API base URL in un file `.env` nella root del progetto:
+```bash
+EXPO_PUBLIC_API_BASE=https://your-api-domain.com
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## Build Web statica
+```bash
+cd document_analyzer_rn
+npx expo export -p web
+```
+Output in `dist/`.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Deploy Web (frontend)
+Puoi pubblicare `dist/` su Vercel, Netlify, Cloudflare Pages o hosting statico equivalente.
 
-## Join the community
+## Deploy API (Render)
+Usa `render.yaml` (root) per deploy completo API + Web, oppure `server/render.yaml` per sola API.
 
-Join our community of developers creating universal apps.
+Servizi previsti:
+- API: `analysispdf-api`
+- Web: `analysispdf`
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Per il deploy imposta:
+- `HF_TOKEN`
+- `JWT_SECRET`
+- `CORS_ORIGIN` (es. `https://analysispdf.onrender.com`)
+
+Il file utenti viene salvato su disk persistente Render in `/var/data/users.json`.

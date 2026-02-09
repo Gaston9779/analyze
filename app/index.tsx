@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
@@ -11,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   PanResponder,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -44,7 +46,7 @@ type StoredSession = {
 const API_BASE =
   (Constants.default.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
   process.env.EXPO_PUBLIC_API_BASE ??
-  'http://127.0.0.1:8787';
+  'https://analysispdf-api.onrender.com';
 const MAX_CHUNK_CHARS = 1800;
 
 const SESSION_KEY = 'doc_analyzer_session_v2';
@@ -119,7 +121,7 @@ export default function DocumentAnalyzerScreen() {
 
   const bootstrapSession = async () => {
     try {
-      const saved = await SecureStore.getItemAsync(SESSION_KEY);
+      const saved = await getStoredSession();
       if (saved) {
         const parsed = JSON.parse(saved) as StoredSession;
         if (parsed?.token) {
@@ -163,7 +165,7 @@ export default function DocumentAnalyzerScreen() {
 
       const data = (await response.json()) as AuthResponse;
       const nextSession = { email, token: data.token };
-      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(nextSession));
+      await setStoredSession(JSON.stringify(nextSession));
       setSession(nextSession);
       setAuthPassword('');
       setLastError(null);
@@ -195,7 +197,7 @@ export default function DocumentAnalyzerScreen() {
 
       const data = (await response.json()) as AuthResponse;
       const nextSession = { email, token: data.token };
-      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(nextSession));
+      await setStoredSession(JSON.stringify(nextSession));
       setSession(nextSession);
       setAuthPassword('');
       setLastError(null);
@@ -206,7 +208,7 @@ export default function DocumentAnalyzerScreen() {
   };
 
   const handleLogout = async () => {
-    await SecureStore.deleteItemAsync(SESSION_KEY);
+    await clearStoredSession();
     setSession(null);
     setResult(null);
     setInputText('');
@@ -245,6 +247,7 @@ export default function DocumentAnalyzerScreen() {
       const picked = await DocumentPicker.getDocumentAsync({
         type: ['image/*', 'application/pdf', 'text/plain'],
         copyToCacheDirectory: true,
+        base64: false,
         multiple: false,
       });
 
@@ -549,11 +552,7 @@ function MiniButton({
 
 async function extractPdfText(asset: DocumentPicker.DocumentPickerAsset, token: string): Promise<string> {
   const form = new FormData();
-  form.append('file', {
-    uri: asset.uri,
-    name: asset.name ?? 'document.pdf',
-    type: 'application/pdf',
-  } as unknown as Blob);
+  appendAssetFile(form, asset, 'application/pdf');
 
   let response;
   try {
@@ -630,11 +629,7 @@ async function summarizeChunk(text: string, token: string): Promise<string | nul
 
 async function ocrImage(asset: DocumentPicker.DocumentPickerAsset, token: string): Promise<string> {
   const form = new FormData();
-  form.append('file', {
-    uri: asset.uri,
-    name: asset.name ?? 'image.jpg',
-    type: asset.mimeType ?? 'image/jpeg',
-  } as unknown as Blob);
+  appendAssetFile(form, asset, 'image/jpeg');
 
   const response = await fetch(`${API_BASE}/ocr`, {
     method: 'POST',
@@ -660,6 +655,9 @@ async function readError(response: Response): Promise<string> {
   if (response.status === 404) {
     return 'Endpoint non trovato (404).';
   }
+  if (response.status === 429) {
+    return 'Troppe richieste. Riprova tra qualche minuto.';
+  }
   try {
     const decoded = await response.json();
     if (decoded?.error) {
@@ -669,6 +667,56 @@ async function readError(response: Response): Promise<string> {
     // Ignore JSON parsing errors and fall back to status text.
   }
   return `HTTP ${response.status}`;
+}
+
+async function getStoredSession(): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return AsyncStorage.getItem(SESSION_KEY);
+  }
+  if (await SecureStore.isAvailableAsync()) {
+    return SecureStore.getItemAsync(SESSION_KEY);
+  }
+  return AsyncStorage.getItem(SESSION_KEY);
+}
+
+async function setStoredSession(value: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.setItem(SESSION_KEY, value);
+    return;
+  }
+  if (await SecureStore.isAvailableAsync()) {
+    await SecureStore.setItemAsync(SESSION_KEY, value);
+    return;
+  }
+  await AsyncStorage.setItem(SESSION_KEY, value);
+}
+
+async function clearStoredSession(): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.removeItem(SESSION_KEY);
+    return;
+  }
+  if (await SecureStore.isAvailableAsync()) {
+    await SecureStore.deleteItemAsync(SESSION_KEY);
+    return;
+  }
+  await AsyncStorage.removeItem(SESSION_KEY);
+}
+
+function appendAssetFile(
+  form: FormData,
+  asset: DocumentPicker.DocumentPickerAsset,
+  fallbackMimeType: string,
+): void {
+  if (Platform.OS === 'web' && asset.file) {
+    form.append('file', asset.file, asset.name);
+    return;
+  }
+  form.append('file', {
+    uri: asset.uri,
+    name: asset.name ?? 'upload.bin',
+    type: asset.mimeType ?? fallbackMimeType,
+  } as unknown as Blob);
 }
 
 function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult {

@@ -22,6 +22,15 @@ services:
       - key: MAX_UPLOAD_BYTES
         value: 5242880
     disk:
-      name: document-analyzer-data
+      name: analysispdf-data
       mountPath: /var/data
       sizeGB: 1
+
+  - type: static
+    name: analysispdf
+    rootDir: .
+    buildCommand: npm install && npm run build:web
+    publishPath: dist
+    envVars:
+      - key: EXPO_PUBLIC_API_BASE
+        value: https://analysispdf-api.onrender.com

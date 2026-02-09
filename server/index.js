@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const bcrypt = require('bcryptjs');
@@ -8,14 +10,60 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-app.use(cors());
+app.set('trust proxy', 1);
+app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json({ limit: '2mb' }));
 
-const upload = multer({ storage: multer.memoryStorage() });
 const port = process.env.PORT || 8787;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 const HF_TOKEN = process.env.HF_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const USERS_FILE = process.env.USERS_FILE || path.join(__dirname, 'data', 'users.json');
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024);
+const CORS_ORIGINS = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+});
+
+if (NODE_ENV === 'production' && (!HF_TOKEN || !JWT_SECRET || JWT_SECRET === 'dev_secret_change_me')) {
+  console.error('Missing secure production configuration. Set HF_TOKEN and JWT_SECRET.');
+  process.exit(1);
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('Origin not allowed by CORS'));
+    },
+  }),
+);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts. Try again later.' },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 45,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Slow down and retry shortly.' },
+});
+
+app.use('/auth', authLimiter);
+app.use(['/extract-pdf', '/ocr', '/analyze'], apiLimiter);
 
 const ensureUsersFile = () => {
   const dir = path.dirname(USERS_FILE);
@@ -59,14 +107,27 @@ const authMiddleware = (req, res, next) => {
 };
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    env: NODE_ENV,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.post('/auth/register', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    const email = String(req.body?.email || '')
+      .trim()
+      .toLowerCase();
+    const password = String(req.body?.password || '');
     if (!email || !password) {
       return res.status(400).json({ error: 'Missing email or password.' });
+    }
+    if (!email.includes('@')) {
+      return res.status(400).json({ error: 'Invalid email format.' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
     const users = loadUsers();
     if (users.find((user) => user.email === email)) {
@@ -85,7 +146,10 @@ app.post('/auth/register', async (req, res) => {
 
 app.post('/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    const email = String(req.body?.email || '')
+      .trim()
+      .toLowerCase();
+    const password = String(req.body?.password || '');
     if (!email || !password) {
       return res.status(400).json({ error: 'Missing email or password.' });
     }
@@ -112,6 +176,9 @@ app.post('/extract-pdf', authMiddleware, upload.single('file'), async (req, res)
     if (!file || !file.buffer) {
       return res.status(400).json({ error: 'Missing PDF file.' });
     }
+    if (file.mimetype !== 'application/pdf') {
+      return res.status(415).json({ error: 'Unsupported file type. Please upload a PDF.' });
+    }
 
     const parsed = await pdfParse(file.buffer);
     const text = (parsed.text || '').trim();
@@ -129,9 +196,12 @@ app.post('/extract-pdf', authMiddleware, upload.single('file'), async (req, res)
 
 app.post('/analyze', authMiddleware, async (req, res) => {
   try {
-    const { text } = req.body || {};
+    const text = String(req.body?.text || '').trim();
     if (!text) {
       return res.status(400).json({ error: 'Missing text.' });
+    }
+    if (text.length > 30000) {
+      return res.status(413).json({ error: 'Text is too long. Please shorten the input.' });
     }
     if (!HF_TOKEN) {
       return res.status(500).json({ error: 'HF_TOKEN not configured on server.' });
@@ -169,6 +239,9 @@ app.post('/ocr', authMiddleware, upload.single('file'), async (req, res) => {
     if (!file || !file.buffer) {
       return res.status(400).json({ error: 'Missing image file.' });
     }
+    if (!String(file.mimetype || '').startsWith('image/')) {
+      return res.status(415).json({ error: 'Unsupported file type. Please upload an image.' });
+    }
     if (!HF_TOKEN) {
       return res.status(500).json({ error: 'HF_TOKEN not configured on server.' });
     }
@@ -194,6 +267,16 @@ app.post('/ocr', authMiddleware, upload.single('file'), async (req, res) => {
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: message });
   }
+});
+
+app.use((error, _req, res, _next) => {
+  if (error?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: `File too large. Max allowed is ${MAX_UPLOAD_BYTES} bytes.` });
+  }
+  if (error?.message === 'Origin not allowed by CORS') {
+    return res.status(403).json({ error: 'Origin not allowed.' });
+  }
+  return res.status(500).json({ error: 'Internal server error.' });
 });
 
 app.listen(port, () => {

@@ -24,10 +24,12 @@ Authorization: Bearer <token>
 2) Env vars:
    - `HF_TOKEN` = token HuggingFace
    - `JWT_SECRET` = stringa lunga casuale
+   - `CORS_ORIGIN` = dominio web consentito (es. `https://your-web-domain.com`)
    - `USERS_FILE` = `/var/data/users.json` (se usi disk)
+   - `MAX_UPLOAD_BYTES` = `5242880` (consigliato)
 3) (Consigliato) aggiungi Render Disk e mount su `/var/data`
 
 ## Avvio locale
 ```
-HF_TOKEN=IL_TUO_TOKEN JWT_SECRET=dev_secret npm run start
+HF_TOKEN=IL_TUO_TOKEN JWT_SECRET=dev_secret CORS_ORIGIN=http://localhost:8081 npm run start
 ```

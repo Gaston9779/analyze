@@ -3,7 +3,7 @@ services:
     name: analysispdf-api
     env: node
     plan: free
-    rootDir: server
+    rootDir: document_analyzer_rn/server
     buildCommand: npm install
     startCommand: npm run start
     healthCheckPath: /health
@@ -28,7 +28,7 @@ services:
 
   - type: static
     name: analysispdf
-    rootDir: .
+    rootDir: document_analyzer_rn
     buildCommand: npm install && npm run build:web
     publishPath: dist
     envVars:

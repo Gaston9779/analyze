@@ -1,7 +1,7 @@
 services:
   - type: web
     name: analysispdf-api
-    env: node
+    runtime: node
     plan: free
     rootDir: server
     buildCommand: npm install
@@ -26,11 +26,12 @@ services:
       mountPath: /var/data
       sizeGB: 1
 
-  - type: static
+  - type: web
     name: analysispdf
+    runtime: static
     rootDir: .
     buildCommand: npm install && npm run build:web
-    publishPath: dist
+    staticPublishPath: dist
     envVars:
       - key: EXPO_PUBLIC_API_BASE
         value: https://analysispdf-api.onrender.com

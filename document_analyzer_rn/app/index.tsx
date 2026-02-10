@@ -54,6 +54,8 @@ const API_BASE =
   (Constants.default.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
   'https://analysispdf-api.onrender.com';
 const MAX_CHUNK_CHARS = 1800;
+const MAX_ANALYZE_CHUNKS = 8;
+const HEALTH_POLL_MS = 60000;
 
 const SESSION_KEY = 'doc_analyzer_session_v2';
 const FONT_FAMILY_REGULAR = 'Inter_400Regular';
@@ -105,7 +107,7 @@ export default function DocumentAnalyzerScreen() {
     };
 
     checkServer();
-    const interval = setInterval(checkServer, 15000);
+    const interval = setInterval(checkServer, HEALTH_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -621,24 +623,36 @@ async function summarizeLong(text: string, token: string): Promise<string | null
     return null;
   }
   if (trimmed.length <= MAX_CHUNK_CHARS) {
-    return summarizeChunk(trimmed, token);
+    try {
+      return (await summarizeChunk(trimmed, token)) ?? buildClientFallbackSummary(trimmed);
+    } catch {
+      return buildClientFallbackSummary(trimmed);
+    }
   }
 
-  const chunks = splitIntoChunks(trimmed, MAX_CHUNK_CHARS);
+  const chunks = splitIntoChunks(trimmed, MAX_CHUNK_CHARS).slice(0, MAX_ANALYZE_CHUNKS);
   const partials: string[] = [];
   for (const chunk of chunks) {
-    const summary = await summarizeChunk(chunk, token);
-    if (summary?.trim()) {
-      partials.push(summary.trim());
+    try {
+      const summary = await summarizeChunk(chunk, token);
+      if (summary?.trim()) {
+        partials.push(summary.trim());
+      }
+    } catch {
+      // Best-effort: keep good chunks and continue with the next one.
     }
   }
   if (!partials.length) {
-    return null;
+    return buildClientFallbackSummary(trimmed);
   }
 
   const combined = partials.join(' ');
   if (combined.length <= MAX_CHUNK_CHARS) {
-    return (await summarizeChunk(combined, token)) ?? combined;
+    try {
+      return (await summarizeChunk(combined, token)) ?? combined;
+    } catch {
+      return combined;
+    }
   }
   return combined;
 }
@@ -939,6 +953,14 @@ function splitIntoChunks(text: string, maxChars: number): string[] {
 
   if (current) chunks.push(current.trim());
   return chunks;
+}
+
+function buildClientFallbackSummary(text: string): string {
+  const sentences = splitSentences(text).slice(0, 4);
+  if (!sentences.length) {
+    return '';
+  }
+  return sentences.map((line) => `- ${line}`).join('\n');
 }
 
 function hardChunks(text: string, maxChars: number): string[] {

@@ -20,6 +20,7 @@ const HF_TOKEN = process.env.HF_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const USERS_FILE = process.env.USERS_FILE || path.join(__dirname, 'data', 'users.json');
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024);
+const HF_TIMEOUT_MS = Number(process.env.HF_TIMEOUT_MS || 45000);
 const ALLOW_ONRENDER_WILDCARD =
   process.env.CORS_ALLOW_ONRENDER_WILDCARD == null
     ? NODE_ENV === 'production'
@@ -212,14 +213,14 @@ app.post('/analyze', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: 'HF_TOKEN not configured on server.' });
     }
 
-    const response = await fetch('https://router.huggingface.co/hf-inference/models/facebook/bart-large-cnn', {
+    const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/facebook/bart-large-cnn', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${HF_TOKEN}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        inputs: buildSummaryPrompt(text),
+        inputs: text,
         parameters: { min_length: 40, max_length: 220 },
       }),
     });
@@ -252,7 +253,7 @@ app.post('/ocr', authMiddleware, upload.single('file'), async (req, res) => {
       return res.status(500).json({ error: 'HF_TOKEN not configured on server.' });
     }
 
-    const response = await fetch('https://router.huggingface.co/hf-inference/models/microsoft/trocr-base-printed', {
+    const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/microsoft/trocr-base-printed', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${HF_TOKEN}`,
@@ -319,16 +320,19 @@ function isOriginAllowed(origin) {
   return false;
 }
 
-function buildSummaryPrompt(text) {
-  return [
-    'Sei un assistente legale-amministrativo in italiano.',
-    'Produci un riassunto massimo 5 punti in elenco puntato.',
-    'Se nel testo sono presenti azioni da svolgere, includile esplicitamente in punti separati e operativi.',
-    'Usa tono neutro e non inventare informazioni non presenti nel testo.',
-    '',
-    'Documento:',
-    text,
-  ].join('\n');
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HF_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`HF request timeout after ${HF_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function postProcessSummary(rawSummary, sourceText) {

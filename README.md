@@ -17,7 +17,7 @@ npx expo start
 ```bash
 cd document_analyzer_rn/server
 npm install
-HF_TOKEN=YOUR_HF_TOKEN JWT_SECRET=YOUR_LONG_RANDOM_SECRET CORS_ORIGIN=http://localhost:8081 npm run start
+HF_TOKEN=YOUR_HF_TOKEN JWT_SECRET=YOUR_LONG_RANDOM_SECRET CORS_ORIGIN=http://localhost:8081 CORS_ALLOW_ONRENDER_WILDCARD=false npm run start
 ```
 
 ## Variabili frontend
@@ -49,6 +49,7 @@ Per il deploy imposta:
 - `HF_TOKEN`
 - `JWT_SECRET`
 - `CORS_ORIGIN` (es. `https://analysispdf.onrender.com`)
+- `CORS_ALLOW_ONRENDER_WILDCARD=true` (consigliato su Render)
 - `USERS_FILE=/tmp/users.json` (Render free tier, non persistente)
 - `MAX_UPLOAD_BYTES=5242880`
 

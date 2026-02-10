@@ -1,7 +1,7 @@
 services:
   - type: web
     name: analysispdf-api
-    env: node
+    runtime: node
     plan: free
     rootDir: server
     buildCommand: npm install
@@ -17,11 +17,9 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
+      - key: CORS_ALLOW_ONRENDER_WILDCARD
+        value: true
       - key: USERS_FILE
-        value: /var/data/users.json
+        value: /tmp/users.json
       - key: MAX_UPLOAD_BYTES
         value: 5242880
-    disk:
-      name: document-analyzer-data
-      mountPath: /var/data
-      sizeGB: 1

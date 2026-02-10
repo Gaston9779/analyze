@@ -20,9 +20,14 @@ const HF_TOKEN = process.env.HF_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const USERS_FILE = process.env.USERS_FILE || path.join(__dirname, 'data', 'users.json');
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024);
+const ALLOW_ONRENDER_WILDCARD =
+  process.env.CORS_ALLOW_ONRENDER_WILDCARD == null
+    ? NODE_ENV === 'production'
+    : String(process.env.CORS_ALLOW_ONRENDER_WILDCARD).toLowerCase() === 'true';
+
 const CORS_ORIGINS = (process.env.CORS_ORIGIN || '')
   .split(',')
-  .map((origin) => origin.trim())
+  .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -37,7 +42,7 @@ if (NODE_ENV === 'production' && (!HF_TOKEN || !JWT_SECRET || JWT_SECRET === 'de
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin)) {
+      if (!origin || isOriginAllowed(origin)) {
         callback(null, true);
         return;
       }
@@ -214,7 +219,7 @@ app.post('/analyze', authMiddleware, async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        inputs: text,
+        inputs: buildSummaryPrompt(text),
         parameters: { min_length: 40, max_length: 220 },
       }),
     });
@@ -225,7 +230,8 @@ app.post('/analyze', authMiddleware, async (req, res) => {
     }
 
     const decoded = await response.json();
-    const summary = Array.isArray(decoded) ? decoded[0]?.summary_text : decoded?.summary_text;
+    const rawSummary = Array.isArray(decoded) ? decoded[0]?.summary_text : decoded?.summary_text;
+    const summary = postProcessSummary(rawSummary, text);
     return res.json({ summary });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -280,5 +286,70 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(port, () => {
+  console.log(
+    `CORS configured with ${CORS_ORIGINS.length} explicit origin(s). Wildcard *.onrender.com: ${ALLOW_ONRENDER_WILDCARD}`,
+  );
   console.log(`API server listening on http://0.0.0.0:${port}`);
 });
+
+function normalizeOrigin(origin) {
+  const value = String(origin || '').trim();
+  if (!value) return '';
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return value.replace(/\/+$/, '');
+  }
+  return `https://${value.replace(/\/+$/, '')}`;
+}
+
+function isRenderOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'https:' && (parsed.hostname === 'onrender.com' || parsed.hostname.endsWith('.onrender.com'));
+  } catch {
+    return false;
+  }
+}
+
+function isOriginAllowed(origin) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return true;
+  if (CORS_ORIGINS.length === 0) return true;
+  if (CORS_ORIGINS.includes(normalized)) return true;
+  if (ALLOW_ONRENDER_WILDCARD && isRenderOrigin(normalized)) return true;
+  return false;
+}
+
+function buildSummaryPrompt(text) {
+  return [
+    'Sei un assistente legale-amministrativo in italiano.',
+    'Produci un riassunto massimo 5 punti in elenco puntato.',
+    'Se nel testo sono presenti azioni da svolgere, includile esplicitamente in punti separati e operativi.',
+    'Usa tono neutro e non inventare informazioni non presenti nel testo.',
+    '',
+    'Documento:',
+    text,
+  ].join('\n');
+}
+
+function postProcessSummary(rawSummary, sourceText) {
+  const base = String(rawSummary || '').replace(/\r/g, '\n').trim();
+  if (!base) return '';
+
+  const cleaned = base
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  let bullets = cleaned.map((line) => (line.startsWith('- ') ? line : `- ${line.replace(/^[-*•]\s*/, '')}`));
+  const hasActionInSource = /(firmare|inviare|trasmettere|pagare|versare|contattare|sottoscrivere)/i.test(sourceText);
+  const hasActionInSummary = /(firmare|inviare|trasmettere|pagare|versare|contattare|sottoscrivere|azione|da fare)/i.test(
+    bullets.join(' '),
+  );
+
+  if (hasActionInSource && !hasActionInSummary) {
+    bullets.push('- Azioni operative: completare le attivita richieste nel documento entro le scadenze indicate.');
+  }
+
+  bullets = bullets.slice(0, 5);
+  return bullets.join('\n');
+}

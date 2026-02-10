@@ -1,5 +1,6 @@
 import { Buffer } from 'buffer';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Inter_400Regular, Inter_600SemiBold, Inter_700Bold, useFonts } from '@expo-google-fonts/inter';
 import * as Clipboard from 'expo-clipboard';
 import * as Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
@@ -42,15 +43,30 @@ type StoredSession = {
   token: string;
 };
 
+type SummarySection = {
+  title: string;
+  lines: string[];
+  emphasize?: boolean;
+};
+
 const API_BASE =
-  (Constants.default.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
   process.env.EXPO_PUBLIC_API_BASE ??
+  (Constants.default.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
   'https://analysispdf-api.onrender.com';
 const MAX_CHUNK_CHARS = 1800;
 
 const SESSION_KEY = 'doc_analyzer_session_v2';
+const FONT_FAMILY_REGULAR = 'Inter_400Regular';
+const FONT_FAMILY_SEMIBOLD = 'Inter_600SemiBold';
+const FONT_FAMILY_BOLD = 'Inter_700Bold';
 
 export default function DocumentAnalyzerScreen() {
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+
   const [inputText, setInputText] = useState('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [status, setStatus] = useState('Pronto. Incolla testo o carica un file.');
@@ -64,10 +80,10 @@ export default function DocumentAnalyzerScreen() {
   const [isBooting, setIsBooting] = useState(true);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [inputHeight, setInputHeight] = useState(160);
-  const [outputHeight, setOutputHeight] = useState(160);
 
   const canAnalyze = inputText.trim().length > 0 && !isLoading;
   const outputText = useMemo(() => (result ? formatResult(result) : ''), [result]);
+  const summarySections = useMemo(() => (result ? buildSummarySections(result) : []), [result]);
 
   useEffect(() => {
     void bootstrapSession();
@@ -102,17 +118,6 @@ export default function DocumentAnalyzerScreen() {
         onStartShouldSetPanResponder: () => true,
         onPanResponderMove: (_evt, gestureState) => {
           setInputHeight((prev) => clamp(prev + gestureState.dy, 100, 520));
-        },
-      }),
-    [],
-  );
-
-  const outputPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onPanResponderMove: (_evt, gestureState) => {
-          setOutputHeight((prev) => clamp(prev + gestureState.dy, 100, 520));
         },
       }),
     [],
@@ -342,7 +347,7 @@ export default function DocumentAnalyzerScreen() {
     }
   };
 
-  if (isBooting) {
+  if (isBooting || !fontsLoaded) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centered}>
@@ -493,15 +498,46 @@ export default function DocumentAnalyzerScreen() {
               <MiniButton label="Esporta PDF" onPress={handleExportPdf} disabled={!outputText || isLoading} />
             </View>
           </View>
-          <Text selectable style={[styles.outputText, { height: outputHeight }]}> 
-            {outputText || 'Nessuna sintesi disponibile.'}
-          </Text>
-          <View style={styles.resizeHandleDark} {...outputPanResponder.panHandlers}>
-            <View style={styles.resizeBar} />
-          </View>
+          {summarySections.length ? (
+            <View style={styles.summarySectionsContainer}>
+              {summarySections.map((section) => (
+                <SummarySectionBlock
+                  key={section.title}
+                  title={section.title}
+                  lines={section.lines}
+                  emphasize={section.emphasize}
+                />
+              ))}
+            </View>
+          ) : (
+            <Text selectable style={styles.outputPlaceholder}>
+              Nessuna sintesi disponibile.
+            </Text>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function SummarySectionBlock({
+  title,
+  lines,
+  emphasize,
+}: {
+  title: string;
+  lines: string[];
+  emphasize?: boolean;
+}) {
+  return (
+    <View style={[styles.summarySectionCard, emphasize && styles.summarySectionCardEmphasis]}>
+      <Text style={[styles.summarySectionTitle, emphasize && styles.summarySectionTitleEmphasis]}>{title}</Text>
+      {lines.map((line, index) => (
+        <Text key={`${title}-${index}`} selectable style={styles.summarySectionLine}>
+          {`\u2022 ${line}`}
+        </Text>
+      ))}
+    </View>
   );
 }
 
@@ -843,16 +879,20 @@ function buildKeyPoints(
   return points.slice(0, 5);
 }
 
-function formatResult(result: AnalysisResult): string {
-  const sections: [string, string[]][] = [
-    ['Tipo documento', [result.documentType]],
-    ['Riassunto', result.summary],
-    ['Punti chiave', result.keyPoints],
-    ['Date importanti', result.importantDates.map((item) => `${item.label}: ${item.value}`)],
-    ['Costi', result.costs.map((item) => `${item.label}: ${item.value}`)],
-    ['Avvisi', result.warnings],
-    ['Azioni richieste', result.actionsRequired],
+function buildSummarySections(result: AnalysisResult): SummarySection[] {
+  return [
+    { title: 'Tipo documento', lines: [result.documentType] },
+    { title: 'Riassunto', lines: result.summary },
+    { title: 'Punti chiave', lines: result.keyPoints },
+    { title: 'Date importanti', lines: result.importantDates.map((item) => `${item.label}: ${item.value}`) },
+    { title: 'Costi', lines: result.costs.map((item) => `${item.label}: ${item.value}`) },
+    { title: 'Avvisi', lines: result.warnings, emphasize: true },
+    { title: 'Azioni richieste', lines: result.actionsRequired, emphasize: true },
   ];
+}
+
+function formatResult(result: AnalysisResult): string {
+  const sections: [string, string[]][] = buildSummarySections(result).map((section) => [section.title, section.lines]);
 
   return sections
     .map(([title, lines]) => `${title}:\n${lines.map((line) => `- ${line}`).join('\n')}`)
@@ -979,6 +1019,7 @@ const styles = StyleSheet.create({
   },
   centeredText: {
     color: '#1d1d1b',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   container: {
     padding: 20,
@@ -1007,17 +1048,19 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 32,
-    fontWeight: '800',
+    fontFamily: FONT_FAMILY_BOLD,
     color: '#ffffff',
   },
   headerSubtitle: {
     marginTop: 4,
     fontSize: 14,
     color: '#d9f1ec',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   headerHint: {
     fontSize: 13,
     color: '#d9f1ec',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   statusRow: {
     flexDirection: 'row',
@@ -1039,6 +1082,7 @@ const styles = StyleSheet.create({
   statusText: {
     flex: 1,
     color: '#1d1d1b',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   errorCard: {
     backgroundColor: '#ffe9e6',
@@ -1049,6 +1093,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: '#7a271a',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   card: {
     backgroundColor: '#fdf9f3',
@@ -1060,7 +1105,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 20,
-    fontWeight: '700',
+    fontFamily: FONT_FAMILY_BOLD,
     color: '#12201f',
   },
   textInput: {
@@ -1070,6 +1115,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     fontSize: 15,
     color: '#1d1d1b',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   textInputSingle: {
     minHeight: 48,
@@ -1079,6 +1125,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 15,
     color: '#1d1d1b',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   buttonRow: {
     flexDirection: 'row',
@@ -1100,7 +1147,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   actionButtonText: {
-    fontWeight: '700',
+    fontFamily: FONT_FAMILY_SEMIBOLD,
     color: '#1f2a29',
   },
   actionButtonTextPrimary: {
@@ -1120,7 +1167,7 @@ const styles = StyleSheet.create({
   },
   cardDarkTitle: {
     fontSize: 20,
-    fontWeight: '700',
+    fontFamily: FONT_FAMILY_BOLD,
     color: '#ffffff',
   },
   buttonRowTight: {
@@ -1135,11 +1182,41 @@ const styles = StyleSheet.create({
   },
   miniButtonText: {
     color: '#ffffff',
-    fontWeight: '700',
+    fontFamily: FONT_FAMILY_SEMIBOLD,
     fontSize: 12,
   },
-  outputText: {
+  summarySectionsContainer: {
+    gap: 10,
+  },
+  summarySectionCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#244446',
+    padding: 12,
+    backgroundColor: '#0b1f20',
+    gap: 6,
+  },
+  summarySectionCardEmphasis: {
+    borderColor: '#f2cc60',
+    backgroundColor: '#1f2e22',
+  },
+  summarySectionTitle: {
+    color: '#f2cc60',
+    fontFamily: FONT_FAMILY_BOLD,
+    fontSize: 16,
+  },
+  summarySectionTitleEmphasis: {
+    color: '#ffda6a',
+  },
+  summarySectionLine: {
+    color: '#c9e8e2',
+    fontFamily: FONT_FAMILY_REGULAR,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  outputPlaceholder: {
     color: '#b7e3dd',
+    fontFamily: FONT_FAMILY_REGULAR,
     fontSize: 14,
     lineHeight: 20,
   },
@@ -1175,23 +1252,20 @@ const styles = StyleSheet.create({
   },
   serverTitle: {
     fontSize: 14,
-    fontWeight: '700',
+    fontFamily: FONT_FAMILY_SEMIBOLD,
     color: '#102221',
   },
   serverSubtitle: {
     fontSize: 12,
     color: '#334845',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   serverHint: {
     fontSize: 12,
     color: '#334845',
+    fontFamily: FONT_FAMILY_REGULAR,
   },
   resizeHandle: {
-    height: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  resizeHandleDark: {
     height: 22,
     alignItems: 'center',
     justifyContent: 'center',

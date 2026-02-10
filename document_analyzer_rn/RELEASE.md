@@ -17,8 +17,9 @@ Da `document_analyzer_rn/server`:
   - `HF_TOKEN`
   - `JWT_SECRET` (random lungo)
   - `CORS_ORIGIN` (dominio web pubblico)
+  - `CORS_ALLOW_ONRENDER_WILDCARD=true` (consigliato)
   - `NODE_ENV=production`
-  - `USERS_FILE=/var/data/users.json`
+  - `USERS_FILE=/tmp/users.json` (Render free)
 
 ## 4) Config progetto mobile
 ```bash

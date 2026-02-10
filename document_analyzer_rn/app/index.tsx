@@ -28,6 +28,7 @@ type AnalysisResult = {
   documentType: string;
   summary: string[];
   keyPoints: string[];
+  exercises: string[];
   importantDates: LabeledValue[];
   costs: LabeledValue[];
   warnings: string[];
@@ -771,7 +772,9 @@ function appendAssetFile(
 function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult {
   const normalized = normalizeForMatching(input);
   const cleanedSummary = extractUsefulSummaryLines(aiSummary);
+  const summaryText = cleanedSummary.join(' ');
   const documentType = inferDocumentType(normalized);
+  const exercises = extractExercises(normalized, summaryText);
   const dates = extractDates(input);
   const costs = extractCosts(input);
   const warnings = extractWarnings(normalized);
@@ -786,6 +789,7 @@ function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult 
     costs.length > 0,
     warnings.length > 0,
     actions.length > 0,
+    exercises.length > 0,
     summary.join(' '),
   );
 
@@ -793,6 +797,7 @@ function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult 
     documentType,
     summary: summary.length ? summary : ['Non specificato'],
     keyPoints: keyPoints.length ? keyPoints : ['Non specificato'],
+    exercises: exercises.length ? exercises : ['Nessun esercizio identificato con certezza.'],
     importantDates: dates.length ? dates : [{ label: 'Non specificato', value: 'Non specificato' }],
     costs: costs.length ? costs : [{ label: 'Non specificato', value: 'Non specificato' }],
     warnings: warnings.length ? warnings : ['Nessun avviso rilevante individuato.'],
@@ -801,6 +806,12 @@ function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult 
 }
 
 function inferDocumentType(text: string): string {
+  if (
+    containsAny(text, ['allenamento', 'workout', 'scheda', 'ripetizioni', 'serie', 'set', 'warm-up', 'defaticamento']) &&
+    containsAny(text, ['lunedi', 'martedi', 'mercoledi', 'giovedi', 'venerdi', 'sabato', 'domenica'])
+  ) {
+    return 'Tabella programma allenamento';
+  }
   if (containsAny(text, ['contratto', 'accordo', 'clausola', 'fornitura', 'condizioni contrattuali'])) return 'Contratto';
   if (containsAny(text, ['bolletta', 'fattura', 'totale da pagare', 'consumi'])) return 'Fattura/Bolletta';
   if (containsAny(text, ['diffida', 'messa in mora', 'intimazione', 'ingiunzione'])) return 'Diffida';
@@ -827,6 +838,7 @@ function extractDates(original: string): LabeledValue[] {
       if (!value || seen.has(value)) continue;
       seen.add(value);
       const context = extractContext(original, match.index ?? 0, 56).toLowerCase();
+      if (!isLikelyReferenceDate(value, context)) continue;
       const label = containsAny(context, ['entro', 'scadenza', 'termine', 'ultim']) ? 'Scadenza' : 'Data rilevante';
       results.push({ label, value });
     }
@@ -931,6 +943,7 @@ function buildKeyPoints(
   hasCosts: boolean,
   hasWarnings: boolean,
   hasActions: boolean,
+  hasExercises: boolean,
   aiSummary: string | null,
 ): string[] {
   const points: string[] = [];
@@ -938,6 +951,7 @@ function buildKeyPoints(
   if (hasDates) points.push('Sono presenti date rilevanti da verificare.');
   if (hasActions) points.push('Sono indicate azioni operative da svolgere.');
   if (!hasActions) points.push('Non risultano azioni operative esplicite.');
+  if (hasExercises) points.push('Sono presenti esercizi strutturati nel documento.');
   if (hasWarnings) points.push('Sono menzionate possibili conseguenze o penali.');
 
   if (!points.length && aiSummary?.trim()) {
@@ -951,6 +965,7 @@ function buildSummarySections(result: AnalysisResult): SummarySection[] {
     { title: 'Tipo documento', lines: [result.documentType] },
     { title: 'Riassunto', lines: result.summary },
     { title: 'Punti chiave', lines: result.keyPoints },
+    { title: 'Esercizi rilevati', lines: result.exercises },
     { title: 'Date importanti', lines: result.importantDates.map((item) => `${item.label}: ${item.value}`) },
     { title: 'Costi', lines: result.costs.map((item) => `${item.label}: ${item.value}`) },
     { title: 'Avvisi', lines: result.warnings, emphasize: true },
@@ -1025,6 +1040,82 @@ function dedupeLabeledValues(values: LabeledValue[]): LabeledValue[] {
     out.push(item);
   }
   return out;
+}
+
+function isLikelyReferenceDate(value: string, context: string): boolean {
+  const normalizedValue = value.replace(/\./g, '/').replace(/-/g, '/').trim();
+  const dateContextHints = [
+    'data',
+    'del',
+    'al',
+    'dal',
+    'entro',
+    'scadenza',
+    'termine',
+    'validita',
+    'aggiornato',
+    'settimana',
+    'programma',
+    'giorno',
+  ];
+
+  const hasContextHint = containsAny(context, dateContextHints);
+  const slashFormat = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(normalizedValue);
+  if (slashFormat) {
+    const day = Number(slashFormat[1]);
+    const month = Number(slashFormat[2]);
+    const year = Number(slashFormat[3]);
+    if (year < 2000 || year > 2100) return false;
+    if (month < 1 || month > 12) return false;
+    if (day < 1 || day > 31) return false;
+    return hasContextHint;
+  }
+
+  const isoFormat = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(normalizedValue);
+  if (isoFormat) {
+    const year = Number(isoFormat[1]);
+    const month = Number(isoFormat[2]);
+    const day = Number(isoFormat[3]);
+    if (year < 2000 || year > 2100) return false;
+    if (month < 1 || month > 12) return false;
+    if (day < 1 || day > 31) return false;
+    return hasContextHint;
+  }
+
+  const monthNameFormat =
+    /\b\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+\d{4}\b/i.test(
+      normalizedValue,
+    );
+  if (monthNameFormat) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractExercises(text: string, summaryText: string): string[] {
+  const source = `${text}\n${summaryText}`;
+  const canonicalExercises: { keys: string[]; label: string }[] = [
+    { keys: ['push-up', 'push up', 'piegamenti'], label: 'Push-up / Piegamenti' },
+    { keys: ['sit-up', 'sit up', 'addominali'], label: 'Sit-up / Addominali' },
+    { keys: ['squat'], label: 'Squat' },
+    { keys: ['affondi', 'lunges', 'lunge'], label: 'Affondi' },
+    { keys: ['plank'], label: 'Plank' },
+    { keys: ['burpee', 'burpees'], label: 'Burpees' },
+    { keys: ['trazioni', 'pull-up', 'pull up', 'chin-up'], label: 'Trazioni / Pull-up' },
+    { keys: ['dip', 'dips'], label: 'Dip' },
+    { keys: ['sprint', 'corsa'], label: 'Sprint / Corsa' },
+    { keys: ['jumping jack', 'salti'], label: 'Jumping Jacks / Salti' },
+  ];
+
+  const found: string[] = [];
+  for (const exercise of canonicalExercises) {
+    if (exercise.keys.some((key) => source.includes(key))) {
+      found.push(exercise.label);
+    }
+  }
+
+  return dedupeAndLimit(found, 10);
 }
 
 function containsAny(text: string, keywords: string[]): boolean {

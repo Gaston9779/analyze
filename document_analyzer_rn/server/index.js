@@ -210,7 +210,8 @@ app.post('/analyze', authMiddleware, async (req, res) => {
       return res.status(413).json({ error: 'Text is too long. Please shorten the input.' });
     }
     if (!HF_TOKEN) {
-      return res.status(500).json({ error: 'HF_TOKEN not configured on server.' });
+      const fallbackSummary = postProcessSummary(buildLocalSummary(text), text);
+      return res.json({ summary: fallbackSummary, mode: 'fallback_no_hf_token' });
     }
 
     const response = await fetchWithTimeout('https://router.huggingface.co/hf-inference/models/facebook/bart-large-cnn', {
@@ -227,16 +228,21 @@ app.post('/analyze', authMiddleware, async (req, res) => {
 
     if (!response.ok) {
       const detail = await response.text();
-      return res.status(response.status).json({ error: detail });
+      console.error(`HF analyze failed with status ${response.status}: ${detail.slice(0, 240)}`);
+      const fallbackSummary = postProcessSummary(buildLocalSummary(text), text);
+      return res.json({ summary: fallbackSummary, mode: 'fallback_hf_error' });
     }
 
     const decoded = await response.json();
     const rawSummary = Array.isArray(decoded) ? decoded[0]?.summary_text : decoded?.summary_text;
-    const summary = postProcessSummary(rawSummary, text);
+    const summary = postProcessSummary(rawSummary || buildLocalSummary(text), text);
     return res.json({ summary });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return res.status(500).json({ error: message });
+    console.error(`Analyze fallback after error: ${message}`);
+    const text = String(req.body?.text || '').trim();
+    const fallbackSummary = postProcessSummary(buildLocalSummary(text), text);
+    return res.json({ summary: fallbackSummary, mode: 'fallback_exception' });
   }
 });
 
@@ -356,4 +362,27 @@ function postProcessSummary(rawSummary, sourceText) {
 
   bullets = bullets.slice(0, 5);
   return bullets.join('\n');
+}
+
+function buildLocalSummary(sourceText) {
+  const normalized = String(sourceText || '').trim();
+  if (!normalized) return '';
+
+  const sentences = normalized
+    .replace(/\n+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const points = [];
+  const summarySentences = sentences.slice(0, 3);
+  for (const sentence of summarySentences) {
+    points.push(sentence);
+  }
+
+  if (/(firmare|inviare|trasmettere|pagare|versare|contattare|sottoscrivere)/i.test(normalized)) {
+    points.push('Azioni operative presenti nel documento: eseguire e verificare le attivita richieste.');
+  }
+
+  return points.slice(0, 5).map((line) => `- ${line}`).join('\n');
 }

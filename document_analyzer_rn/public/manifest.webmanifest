@@ -1,0 +1,17 @@
+{
+  "name": "Document Analyzer",
+  "short_name": "AnalyzePDF",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b2324",
+  "theme_color": "#0e5c5a",
+  "icons": [
+    {
+      "src": "/assets/images/pdf.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

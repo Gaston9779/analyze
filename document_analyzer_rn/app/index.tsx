@@ -769,15 +769,16 @@ function appendAssetFile(
 }
 
 function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult {
-  const normalized = input.toLowerCase();
+  const normalized = normalizeForMatching(input);
+  const cleanedSummary = extractUsefulSummaryLines(aiSummary);
   const documentType = inferDocumentType(normalized);
   const dates = extractDates(input);
   const costs = extractCosts(input);
   const warnings = extractWarnings(normalized);
-  const actions = extractActions(normalized);
+  const actions = extractActions(normalized, input, dates);
 
-  const summary = aiSummary?.trim()
-    ? splitSentences(aiSummary).slice(0, 4)
+  const summary = cleanedSummary.length
+    ? cleanedSummary
     : buildFallbackSummary(documentType, dates.length > 0, costs.length > 0, actions.length > 0);
 
   const keyPoints = buildKeyPoints(
@@ -785,7 +786,7 @@ function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult 
     costs.length > 0,
     warnings.length > 0,
     actions.length > 0,
-    aiSummary,
+    summary.join(' '),
   );
 
   return {
@@ -794,15 +795,19 @@ function buildAnalysis(input: string, aiSummary: string | null): AnalysisResult 
     keyPoints: keyPoints.length ? keyPoints : ['Non specificato'],
     importantDates: dates.length ? dates : [{ label: 'Non specificato', value: 'Non specificato' }],
     costs: costs.length ? costs : [{ label: 'Non specificato', value: 'Non specificato' }],
-    warnings: warnings.length ? warnings : ['Non specificato'],
-    actionsRequired: actions.length ? actions : ['Non specificato'],
+    warnings: warnings.length ? warnings : ['Nessun avviso rilevante individuato.'],
+    actionsRequired: actions.length ? actions : ['Nessuna azione operativa esplicita individuata.'],
   };
 }
 
 function inferDocumentType(text: string): string {
-  if (containsAny(text, ['contratto', 'accordo', 'clausola'])) return 'Contratto';
-  if (containsAny(text, ['bolletta', 'fattura'])) return 'Bolletta';
-  if (containsAny(text, ['comunicazione', 'avviso', 'notifica', 'protocollo'])) return 'Comunicazione ufficiale';
+  if (containsAny(text, ['contratto', 'accordo', 'clausola', 'fornitura', 'condizioni contrattuali'])) return 'Contratto';
+  if (containsAny(text, ['bolletta', 'fattura', 'totale da pagare', 'consumi'])) return 'Fattura/Bolletta';
+  if (containsAny(text, ['diffida', 'messa in mora', 'intimazione', 'ingiunzione'])) return 'Diffida';
+  if (containsAny(text, ['privacy', 'trattamento dati', 'gdpr', 'consenso'])) return 'Informativa Privacy';
+  if (containsAny(text, ['preventivo', 'offerta economica', 'proposta commerciale'])) return 'Preventivo/Offerta';
+  if (containsAny(text, ['verbale', 'delibera', 'assemblea', 'riunione'])) return 'Verbale/Delibera';
+  if (containsAny(text, ['comunicazione', 'avviso', 'notifica', 'protocollo', 'raccomandata', 'pec'])) return 'Comunicazione ufficiale';
   if (containsAny(text, ['lettera', 'gentile', 'spett.le', 'cordiali saluti'])) return 'Lettera';
   return 'Non specificato';
 }
@@ -811,6 +816,7 @@ function extractDates(original: string): LabeledValue[] {
   const patterns = [
     /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/g,
     /\b\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}\b/g,
+    /\b\d{1,2}\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+\d{2,4}\b/gi,
   ];
   const results: LabeledValue[] = [];
   const seen = new Set<string>();
@@ -820,15 +826,17 @@ function extractDates(original: string): LabeledValue[] {
       const value = match[0]?.trim();
       if (!value || seen.has(value)) continue;
       seen.add(value);
-      results.push({ label: 'Data rilevante', value });
+      const context = extractContext(original, match.index ?? 0, 56).toLowerCase();
+      const label = containsAny(context, ['entro', 'scadenza', 'termine', 'ultim']) ? 'Scadenza' : 'Data rilevante';
+      results.push({ label, value });
     }
   }
 
-  return results.slice(0, 6);
+  return dedupeLabeledValues(results).slice(0, 6);
 }
 
 function extractCosts(original: string): LabeledValue[] {
-  const moneyRegex = /(€\s?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{2})?|\d{1,3}(?:[\.\s]\d{3})*(?:,\d{2})?\s?(?:€|eur|euro))/gi;
+  const moneyRegex = /(€\s?\d{1,3}(?:[\.\s]\d{3})*(?:,\d{2})?|\d{1,3}(?:[\.\s]\d{3})*(?:,\d{2})?\s?(?:€|eur|euro)|\b\d+(?:,\d+)?\s?%\b)/gi;
   const results: LabeledValue[] = [];
   const seen = new Set<string>();
 
@@ -836,29 +844,73 @@ function extractCosts(original: string): LabeledValue[] {
     const value = match[0]?.trim();
     if (!value || seen.has(value)) continue;
     seen.add(value);
-    results.push({ label: 'Importo', value });
+    const context = extractContext(original, match.index ?? 0, 58).toLowerCase();
+    let label = 'Importo';
+    if (containsAny(context, ['iva', 'imposta', 'tasse'])) label = 'Imposta';
+    else if (containsAny(context, ['penale', 'sanzion'])) label = 'Penale';
+    else if (containsAny(context, ['interess', 'mora'])) label = 'Interesse';
+    else if (containsAny(context, ['rata', 'mensile'])) label = 'Rata';
+    else if (containsAny(context, ['sconto', 'ribasso'])) label = 'Sconto';
+    results.push({ label, value });
   }
 
-  return results.slice(0, 6);
+  return dedupeLabeledValues(results).slice(0, 6);
 }
 
 function extractWarnings(text: string): string[] {
   const warnings: string[] = [];
-  if (containsAny(text, ['penale', 'penali'])) warnings.push('Il testo cita penali in caso di mancata azione.');
-  if (containsAny(text, ['mora', 'interessi'])) warnings.push('Sono menzionati interessi di mora o costi aggiuntivi.');
-  if (containsAny(text, ['sospensione', 'interruzione'])) warnings.push('Possibile sospensione del servizio se non si agisce.');
-  if (containsAny(text, ['sollecito', 'recupero'])) warnings.push('Il testo indica solleciti o azioni di recupero.');
-  return warnings.slice(0, 5);
+  if (containsAny(text, ['penale', 'penali', 'sanzion'])) warnings.push('Prevista penale o sanzione in caso di inadempimento.');
+  if (containsAny(text, ['mora', 'interessi', 'interesse'])) warnings.push('Sono citati interessi di mora o costi aggiuntivi.');
+  if (containsAny(text, ['sospensione', 'interruzione', 'revoca'])) warnings.push('Possibile sospensione/interruzione del servizio.');
+  if (containsAny(text, ['sollecito', 'recupero crediti', 'intimazione'])) warnings.push('Sono indicate azioni di sollecito o recupero crediti.');
+  if (containsAny(text, ['decadenza', 'annullamento', 'recesso'])) warnings.push('Esiste rischio di decadenza o annullamento di diritti/servizi.');
+  if (containsAny(text, ['termine perentorio', 'entro e non oltre'])) warnings.push('Termini stringenti: superata la data possono esserci conseguenze.');
+  if (containsAny(text, ['contenzioso', 'tribunale', 'azione legale'])) warnings.push('Il testo menziona possibili azioni legali.');
+  return dedupeAndLimit(warnings, 6);
 }
 
-function extractActions(text: string): string[] {
+function extractActions(text: string, original: string, dates: LabeledValue[]): string[] {
   const actions: string[] = [];
-  if (containsAny(text, ['pagare', 'versare', 'saldo'])) actions.push('Pagare l\'importo indicato entro i termini.');
-  if (containsAny(text, ['contattare', 'telefonare', 'email', 'e-mail'])) actions.push('Contattare l\'ente o l\'ufficio indicato.');
-  if (containsAny(text, ['firmare', 'sottoscrivere'])) actions.push('Firmare e restituire il documento.');
-  if (containsAny(text, ['inviare', 'trasmettere'])) actions.push('Inviare la documentazione richiesta.');
-  if (containsAny(text, ['conservare', 'archiviare'])) actions.push('Conservare il documento per eventuali verifiche.');
-  return actions.slice(0, 5);
+  if (containsAny(text, ['pagare', 'versare', 'saldo', 'bonifico', 'addebito'])) {
+    actions.push('Effettuare il pagamento richiesto entro la scadenza indicata.');
+  }
+  if (containsAny(text, ['contattare', 'telefonare', 'email', 'e-mail', 'pec', 'call center'])) {
+    actions.push('Contattare l\'ente/ufficio ai riferimenti indicati nel documento.');
+  }
+  if (containsAny(text, ['firmare', 'sottoscrivere', 'siglare'])) {
+    actions.push('Firmare il documento e completare la restituzione dove richiesto.');
+  }
+  if (containsAny(text, ['inviare', 'trasmettere', 'inoltrare', 'allegare'])) {
+    actions.push('Inviare la documentazione richiesta con i canali indicati.');
+  }
+  if (containsAny(text, ['conservare', 'archiviare', 'tenere copia'])) {
+    actions.push('Conservare copia del documento e delle ricevute di invio/pagamento.');
+  }
+  if (containsAny(text, ['presentare ricorso', 'opposizione', 'contestare'])) {
+    actions.push('Valutare ricorso/opposizione entro i termini previsti.');
+  }
+  if (containsAny(text, ['attivare', 'disattivare', 'abilitare'])) {
+    actions.push('Eseguire l\'attivazione/disattivazione del servizio secondo istruzioni.');
+  }
+  if (containsAny(text, ['fornire', 'comunicare', 'dichiarare', 'compilare'])) {
+    actions.push('Fornire i dati o compilare i moduli richiesti.');
+  }
+  if (containsAny(text, ['prendere appuntamento', 'presentarsi'])) {
+    actions.push('Prenotare/presentarsi all\'appuntamento indicato nel testo.');
+  }
+  if (containsAny(text, ['accettare', 'rifiutare'])) {
+    actions.push('Esplicitare accettazione o rifiuto entro i tempi previsti.');
+  }
+
+  const hasDeadline = dates.some((item) => item.label === 'Scadenza');
+  if (actions.length > 0 && hasDeadline) {
+    actions.push('Dare priorita alle azioni con scadenza ravvicinata.');
+  }
+  if (actions.length === 0 && containsAny(normalizeForMatching(original), ['richiesta', 'si invita', 'e necessario'])) {
+    actions.push('Verificare attentamente il testo: potrebbe contenere richieste implicite.');
+  }
+
+  return dedupeAndLimit(actions, 7);
 }
 
 function buildFallbackSummary(documentType: string, hasDates: boolean, hasCosts: boolean, hasActions: boolean): string[] {
@@ -884,13 +936,14 @@ function buildKeyPoints(
   const points: string[] = [];
   if (hasCosts) points.push('Sono indicati importi economici nel testo.');
   if (hasDates) points.push('Sono presenti date rilevanti da verificare.');
-  if (hasActions) points.push('Sono indicate azioni da svolgere.');
+  if (hasActions) points.push('Sono indicate azioni operative da svolgere.');
+  if (!hasActions) points.push('Non risultano azioni operative esplicite.');
   if (hasWarnings) points.push('Sono menzionate possibili conseguenze o penali.');
 
   if (!points.length && aiSummary?.trim()) {
-    points.push(...splitSentences(aiSummary).slice(0, 4));
+    points.push(...extractUsefulSummaryLines(aiSummary).slice(0, 4));
   }
-  return points.slice(0, 5);
+  return dedupeAndLimit(points, 6);
 }
 
 function buildSummarySections(result: AnalysisResult): SummarySection[] {
@@ -919,6 +972,59 @@ function splitSentences(text: string): string[] {
     .split(/(?<=[.!?])\s+/)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function extractUsefulSummaryLines(summary: string | null): string[] {
+  if (!summary?.trim()) return [];
+
+  const lines = summary
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/^[-*•\s]+/, '').trim())
+    .filter(Boolean)
+    .filter((line) => !/^\d+[.)]?$/.test(line))
+    .filter((line) => line.length >= 8);
+
+  if (lines.length) return dedupeAndLimit(lines, 5);
+  return dedupeAndLimit(splitSentences(summary).filter((line) => line.length >= 8), 5);
+}
+
+function normalizeForMatching(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function extractContext(source: string, index: number, span: number): string {
+  const start = Math.max(0, index - span);
+  const end = Math.min(source.length, index + span);
+  return source.slice(start, end);
+}
+
+function dedupeAndLimit(values: string[], max: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const key = value.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value.trim());
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function dedupeLabeledValues(values: LabeledValue[]): LabeledValue[] {
+  const seen = new Set<string>();
+  const out: LabeledValue[] = [];
+  for (const item of values) {
+    const key = `${item.label.toLowerCase()}::${item.value.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function containsAny(text: string, keywords: string[]): boolean {
